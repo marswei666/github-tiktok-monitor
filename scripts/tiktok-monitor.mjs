@@ -70,9 +70,12 @@ function extractVideoIds(handle, html) {
   const seen = new Set();
   const escapedHandle = handle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const patterns = [
-    new RegExp(`https?:\\\\?/\\\\?/www\\.tiktok\\.com\\\\?/@${escapedHandle}/video/(\\d+)`, "g"),
-    new RegExp(`/@${escapedHandle}/video/(\\d+)`, "g"),
-    /"video"[^{}]{0,200}"id":"(\d{10,})"/g,
+    new RegExp(`https?:\\\\?/\\\\?/www\\.tiktok\\.com/@${escapedHandle}/video/(\\d{10,})`, "g"),
+    new RegExp(`https?:\\\\?/\\\\?/www\\.tiktok\\.com\\\\?/\\\\?/@${escapedHandle}\\\\?/video\\\\?/(\\d{10,})`, "g"),
+    new RegExp(`/@${escapedHandle}/video/(\\d{10,})`, "g"),
+    /\\?"id\\?":\\?"(\d{10,})\\?"/g,
+    /\\?"videoId\\?":\\?"(\d{10,})\\?"/g,
+    /\/video\/(\d{10,})/g,
   ];
 
   for (const pattern of patterns) {
@@ -86,6 +89,16 @@ function extractVideoIds(handle, html) {
   }
 
   return ids;
+}
+
+function pageLooksBlocked(html) {
+  return [
+    "captcha",
+    "verify",
+    "Access Denied",
+    "Please wait",
+    "Something went wrong",
+  ].some((marker) => html.toLowerCase().includes(marker.toLowerCase()));
 }
 
 function postUrl(handle, id) {
@@ -117,6 +130,7 @@ async function main() {
   const state = await readState();
   const notifications = [];
   const failures = [];
+  let checkedCount = 0;
 
   for (const handle of creators) {
     try {
@@ -125,10 +139,14 @@ async function main() {
       const previous = state.creators[handle]?.latestVideoId ?? null;
 
       if (ids.length === 0) {
-        failures.push(`${handle}: no video IDs found`);
+        const reason = pageLooksBlocked(html)
+          ? "no video IDs found; page may be blocked/challenged"
+          : "no video IDs found";
+        failures.push(`${handle}: ${reason}; html length=${html.length}`);
         continue;
       }
 
+      checkedCount += 1;
       const latest = ids[0];
       if (!previous) {
         state.creators[handle] = {
@@ -161,6 +179,14 @@ async function main() {
   }
 
   await writeState(state);
+
+  if (checkedCount === 0) {
+    console.log("All TikTok profile checks failed. This is usually caused by TikTok blocking GitHub Actions runner IPs or changing profile HTML.");
+    console.log("Failures:");
+    for (const failure of failures) console.log(`- ${failure}`);
+    process.exitCode = 1;
+    return;
+  }
 
   if (notifications.length > 0) {
     const title =
