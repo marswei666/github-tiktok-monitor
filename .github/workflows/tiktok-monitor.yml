@@ -35,6 +35,12 @@ jobs:
           if [[ -n "$(git status --porcelain data/tiktok-state.json)" ]]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+            cp data/tiktok-state.json /tmp/tiktok-state.json
+            git fetch origin main
+            git reset --hard origin/main
+            cp /tmp/tiktok-state.json data/tiktok-state.json
+
             git add data/tiktok-state.json
             git commit -m "Update TikTok monitor state"
             git push
