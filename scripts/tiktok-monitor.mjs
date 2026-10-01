@@ -133,6 +133,33 @@ function extractEmbeddedJson(html) {
   return documents;
 }
 
+function findProfileIdentity(value, handle) {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findProfileIdentity(item, handle);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (!value || typeof value !== "object") return null;
+  if (normalizeHandle(value.uniqueId ?? value.unique_id) === normalizeHandle(handle) && value.secUid) {
+    return { secUid: value.secUid, displayName: value.nickname ?? value.nickName ?? "" };
+  }
+  for (const child of Object.values(value)) {
+    const found = findProfileIdentity(child, handle);
+    if (found) return found;
+  }
+  return null;
+}
+
+function extractProfileIdentity(handle, html) {
+  for (const document of extractEmbeddedJson(html)) {
+    const identity = findProfileIdentity(document, handle);
+    if (identity) return identity;
+  }
+  return null;
+}
+
 function compareVideoIdsDescending(a, b) {
   const left = BigInt(a.id);
   const right = BigInt(b.id);
@@ -152,6 +179,38 @@ function extractPosts(handle, html) {
   }
   for (const document of extractEmbeddedJson(html)) collectJsonPosts(document, handle, posts);
   return [...posts.values()].sort(compareVideoIdsDescending);
+}
+
+async function fetchPostList(handle, secUid) {
+  const url = new URL("https://www.tiktok.com/api/post/item_list/");
+  url.searchParams.set("aid", "1988");
+  url.searchParams.set("count", "6");
+  url.searchParams.set("cursor", "0");
+  url.searchParams.set("secUid", secUid);
+  const response = await fetch(url, {
+    headers: {
+      accept: "application/json, text/plain, */*",
+      "accept-language": "en-US,en;q=0.9",
+      referer: `https://www.tiktok.com/@${handle}`,
+      "user-agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36",
+    },
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`post API HTTP ${response.status}; body=${text.length}`);
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(`post API returned non-JSON; body=${text.length}`);
+  }
+  const posts = new Map();
+  collectJsonPosts(data, handle, posts);
+  return {
+    posts: [...posts.values()].sort(compareVideoIdsDescending),
+    statusCode: data.statusCode ?? data.status_code ?? "unknown",
+    bodyLength: text.length,
+  };
 }
 
 function pageLooksBlocked(html) {
@@ -257,12 +316,25 @@ async function main() {
   for (const handle of creators) {
     try {
       const html = await fetchProfile(handle);
-      const posts = extractPosts(handle, html);
+      let posts = extractPosts(handle, html);
+      let apiDiagnostics = "postApi=not-tried";
+      const identity = extractProfileIdentity(handle, html);
+      if (posts.length === 0 && identity?.secUid) {
+        try {
+          const result = await fetchPostList(handle, identity.secUid);
+          posts = result.posts;
+          apiDiagnostics = `postApiStatus=${result.statusCode}; postApiBody=${result.bodyLength}`;
+        } catch (error) {
+          apiDiagnostics = `postApiError=${error.message}`;
+        }
+      }
       if (posts.length === 0) {
         const reason = pageLooksBlocked(html)
           ? "no verified post IDs found; page may be blocked/challenged"
           : "no verified post IDs found";
-        failures.push(`${handle}: ${reason}; ${htmlDiagnostics(html)}`);
+        failures.push(
+          `${handle}: ${reason}; identity=${Boolean(identity?.secUid)}; ${apiDiagnostics}; ${htmlDiagnostics(html)}`,
+        );
         continue;
       }
 
