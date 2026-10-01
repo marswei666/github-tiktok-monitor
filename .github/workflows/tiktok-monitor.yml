@@ -1,6 +1,12 @@
 name: TikTok nature creator monitor
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/tiktok-monitor.yml"
+      - "scripts/**"
   schedule:
     - cron: "3,8,13,18,23,28,33,38,43,48,53,58 * * * *"
   workflow_dispatch:
