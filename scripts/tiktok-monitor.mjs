@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -29,8 +30,10 @@ const creators = [
   "8k.vibe",
 ];
 
+const DETECTOR_VERSION = 2;
 const stateFile = path.join(process.cwd(), "data", "tiktok-state.json");
 const sendKey = process.env.SERVER_CHAN_SENDKEY;
+const sendTestNotification = process.env.SEND_TEST_NOTIFICATION === "true";
 
 async function readState() {
   try {
@@ -49,158 +52,275 @@ async function writeState(state) {
 async function fetchProfile(handle) {
   const response = await fetch(`https://www.tiktok.com/@${handle}`, {
     headers: {
-      "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "accept-language": "en-US,en;q=0.9",
       "cache-control": "no-cache",
-      "pragma": "no-cache",
+      pragma: "no-cache",
       "user-agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36",
     },
   });
 
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
-  }
-
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.text();
 }
 
-function extractVideoIds(handle, html) {
-  const ids = [];
-  const seen = new Set();
-  const escapedHandle = handle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const patterns = [
-    new RegExp(`https?:\\\\?/\\\\?/www\\.tiktok\\.com/@${escapedHandle}/video/(\\d{10,})`, "g"),
-    new RegExp(`https?:\\\\?/\\\\?/www\\.tiktok\\.com\\\\?/\\\\?/@${escapedHandle}\\\\?/video\\\\?/(\\d{10,})`, "g"),
-    new RegExp(`/@${escapedHandle}/video/(\\d{10,})`, "g"),
-    /\\?"id\\?":\\?"(\d{10,})\\?"/g,
-    /\\?"videoId\\?":\\?"(\d{10,})\\?"/g,
-    /\/video\/(\d{10,})/g,
-  ];
+function normalizeHandle(value) {
+  return String(value ?? "").replace(/^@/, "").trim().toLowerCase();
+}
 
-  for (const pattern of patterns) {
-    for (const match of html.matchAll(pattern)) {
-      const id = match[1];
-      if (!seen.has(id)) {
-        seen.add(id);
-        ids.push(id);
-      }
-    }
+function addPost(posts, candidate) {
+  if (!/^\d{10,}$/.test(candidate.id ?? "")) return;
+  const existing = posts.get(candidate.id);
+  posts.set(candidate.id, {
+    id: candidate.id,
+    createTime: candidate.createTime ?? existing?.createTime ?? null,
+    description: candidate.description ?? existing?.description ?? "",
+    displayName: candidate.displayName ?? existing?.displayName ?? "",
+  });
+}
+
+function authorDetails(item) {
+  if (typeof item.author === "string") {
+    return { handle: item.author, displayName: "" };
+  }
+  if (item.author && typeof item.author === "object") {
+    return {
+      handle: item.author.uniqueId ?? item.author.unique_id ?? "",
+      displayName: item.author.nickname ?? item.author.nickName ?? "",
+    };
+  }
+  return { handle: item.authorName ?? "", displayName: "" };
+}
+
+function collectJsonPosts(value, handle, posts) {
+  if (Array.isArray(value)) {
+    for (const item of value) collectJsonPosts(item, handle, posts);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+
+  const { handle: authorHandle, displayName } = authorDetails(value);
+  const looksLikePost =
+    /^\d{10,}$/.test(String(value.id ?? "")) &&
+    value.video &&
+    typeof value.video === "object";
+
+  if (looksLikePost && normalizeHandle(authorHandle) === normalizeHandle(handle)) {
+    addPost(posts, {
+      id: String(value.id),
+      createTime: value.createTime ?? value.create_time ?? null,
+      description: value.desc ?? value.description ?? "",
+      displayName,
+    });
   }
 
-  return ids;
+  for (const child of Object.values(value)) collectJsonPosts(child, handle, posts);
+}
+
+function extractEmbeddedJson(html) {
+  const documents = [];
+  const scripts = html.matchAll(
+    /<script[^>]+id=["'](?:SIGI_STATE|__UNIVERSAL_DATA_FOR_REHYDRATION__)["'][^>]*>([\s\S]*?)<\/script>/gi,
+  );
+  for (const match of scripts) {
+    try {
+      documents.push(JSON.parse(match[1]));
+    } catch {
+      // Ignore incomplete challenge pages; the caller reports missing verified posts.
+    }
+  }
+  return documents;
+}
+
+function compareVideoIdsDescending(a, b) {
+  const left = BigInt(a.id);
+  const right = BigInt(b.id);
+  return left > right ? -1 : left < right ? 1 : 0;
+}
+
+function extractPosts(handle, html) {
+  const posts = new Map();
+  const normalizedHtml = html.replace(/\\u002F/gi, "/").replace(/\\\//g, "/");
+  const escapedHandle = handle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const urlPattern = new RegExp(
+    `(?:https?:)?//(?:www\\.)?tiktok\\.com/@${escapedHandle}/video/(\\d{10,})|/@${escapedHandle}/video/(\\d{10,})`,
+    "gi",
+  );
+  for (const match of normalizedHtml.matchAll(urlPattern)) {
+    addPost(posts, { id: match[1] ?? match[2] });
+  }
+  for (const document of extractEmbeddedJson(html)) collectJsonPosts(document, handle, posts);
+  return [...posts.values()].sort(compareVideoIdsDescending);
 }
 
 function pageLooksBlocked(html) {
-  return [
-    "captcha",
-    "verify",
-    "Access Denied",
-    "Please wait",
-    "Something went wrong",
-  ].some((marker) => html.toLowerCase().includes(marker.toLowerCase()));
+  return ["captcha", "verify", "Access Denied", "Please wait", "Something went wrong"].some(
+    (marker) => html.toLowerCase().includes(marker.toLowerCase()),
+  );
 }
 
 function postUrl(handle, id) {
   return `https://www.tiktok.com/@${handle}/video/${id}`;
 }
 
-async function pushWechat(title, desp) {
-  if (!sendKey) {
-    console.log("SERVER_CHAN_SENDKEY is not configured; skipping WeChat push.");
-    return;
+function videoPublishedAt(post) {
+  const explicit = Number(post.createTime);
+  if (Number.isFinite(explicit) && explicit > 1_450_000_000) return new Date(explicit * 1000);
+  try {
+    const date = new Date(Number(BigInt(post.id) >> 32n) * 1000);
+    const upperBound = Date.now() + 7 * 24 * 60 * 60 * 1000;
+    if (date.getTime() > Date.UTC(2016, 0, 1) && date.getTime() < upperBound) return date;
+  } catch {
+    // Keep an unknown publication time when an ID cannot be decoded.
   }
+  return null;
+}
 
-  const body = new URLSearchParams({ title, desp });
+function formatChinaTime(date) {
+  if (!date) return "页面未提供";
+  return date.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
+}
+
+function shortDescription(text) {
+  const normalized = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (!normalized) return "页面未提供文案";
+  return normalized.length > 180 ? `${normalized.slice(0, 177)}...` : normalized;
+}
+
+async function pushWechat(title, desp) {
+  if (!sendKey) throw new Error("SERVER_CHAN_SENDKEY is not configured");
   const response = await fetch(`https://sctapi.ftqq.com/${sendKey}.send`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded;charset=UTF-8" },
-    body,
+    body: new URLSearchParams({ title, desp }),
   });
-
   const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`ServerChan HTTP ${response.status}: ${text}`);
+  if (!response.ok) throw new Error(`ServerChan HTTP ${response.status}: ${text}`);
+  try {
+    const result = JSON.parse(text);
+    if (result.code !== 0) throw new Error(`ServerChan rejected push: ${text}`);
+  } catch (error) {
+    if (error.message.startsWith("ServerChan rejected")) throw error;
   }
+  console.log("ServerChan accepted the push.");
+}
 
-  console.log(`ServerChan push response: ${text}`);
+function notificationMarkdown(items) {
+  return items
+    .map((item) => {
+      const name = item.displayName ? `${item.displayName}（@${item.handle}）` : `@${item.handle}`;
+      return [
+        `### ${name}`,
+        "",
+        `- 发布时间：${formatChinaTime(videoPublishedAt(item))}`,
+        `- 链接：${item.url}`,
+        `- 内容判断：${shortDescription(item.description)}`,
+      ].join("\n");
+    })
+    .join("\n\n---\n\n");
 }
 
 async function main() {
+  if (sendTestNotification) {
+    await pushWechat(
+      "TikTok监控测试通知",
+      `GitHub Actions 已连接 Server酱。\n\n测试时间：${formatChinaTime(new Date())}`,
+    );
+  }
+
   const state = await readState();
+  state.creators ??= {};
   const notifications = [];
   const failures = [];
   let checkedCount = 0;
+  let baselineCount = 0;
+  let stateChanged = false;
 
   for (const handle of creators) {
     try {
       const html = await fetchProfile(handle);
-      const ids = extractVideoIds(handle, html);
-      const previous = state.creators[handle]?.latestVideoId ?? null;
-
-      if (ids.length === 0) {
+      const posts = extractPosts(handle, html);
+      if (posts.length === 0) {
         const reason = pageLooksBlocked(html)
-          ? "no video IDs found; page may be blocked/challenged"
-          : "no video IDs found";
+          ? "no verified post IDs found; page may be blocked/challenged"
+          : "no verified post IDs found";
         failures.push(`${handle}: ${reason}; html length=${html.length}`);
         continue;
       }
 
       checkedCount += 1;
-      const latest = ids[0];
-      if (!previous) {
+      const latest = posts[0];
+      const previousState = state.creators[handle];
+      const needsBaseline = previousState?.detectorVersion !== DETECTOR_VERSION;
+      if (!previousState || needsBaseline) {
         state.creators[handle] = {
-          latestVideoId: latest,
-          latestUrl: postUrl(handle, latest),
-          initializedAt: new Date().toISOString(),
+          latestVideoId: latest.id,
+          latestUrl: postUrl(handle, latest.id),
+          detectorVersion: DETECTOR_VERSION,
+          baselineAt: new Date().toISOString(),
         };
-        console.log(`${handle}: initialized with ${latest}`);
+        baselineCount += 1;
+        stateChanged = true;
+        console.log(`${handle}: detector v${DETECTOR_VERSION} baseline ${latest.id}`);
         continue;
       }
 
-      if (latest !== previous) {
-        const unseen = ids.slice(0, Math.max(1, ids.indexOf(previous))).slice(0, 3);
-        for (const id of unseen) {
-          notifications.push({ handle, id, url: postUrl(handle, id) });
+      const previousId = previousState.latestVideoId;
+      const newPosts = posts.filter((post) => BigInt(post.id) > BigInt(previousId)).slice(0, 3);
+      if (newPosts.length > 0) {
+        for (const post of newPosts) {
+          notifications.push({ ...post, handle, url: postUrl(handle, post.id) });
         }
-
         state.creators[handle] = {
-          ...state.creators[handle],
-          latestVideoId: latest,
-          latestUrl: postUrl(handle, latest),
+          ...previousState,
+          latestVideoId: latest.id,
+          latestUrl: postUrl(handle, latest.id),
           updatedAt: new Date().toISOString(),
         };
+        stateChanged = true;
       } else {
-        console.log(`${handle}: no change (${latest})`);
+        console.log(`${handle}: no change (${previousId})`);
       }
     } catch (error) {
       failures.push(`${handle}: ${error.message}`);
     }
   }
 
-  await writeState(state);
-
   if (checkedCount === 0) {
-    console.log("All TikTok profile checks failed. This is usually caused by TikTok blocking GitHub Actions runner IPs or changing profile HTML.");
-    console.log("Failures:");
+    console.log(
+      "All TikTok profile checks failed. TikTok may be blocking GitHub Actions runner IPs or may have changed its profile HTML.",
+    );
     for (const failure of failures) console.log(`- ${failure}`);
     process.exitCode = 1;
     return;
   }
 
   if (notifications.length > 0) {
-    const title =
-      notifications.length === 1
-        ? `TikTok自然内容新帖：@${notifications[0].handle}`
-        : `TikTok自然内容新帖：${notifications.length}条`;
-    const desp = notifications
-      .map((item) => `### @${item.handle}\n\n- 链接：${item.url}\n- 检测时间：${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`)
-      .join("\n\n---\n\n");
-
-    await pushWechat(title, desp);
+    const title = notifications.length === 1
+      ? `TikTok自然内容新帖：@${notifications[0].handle}`
+      : `TikTok自然内容新帖：${notifications.length}条`;
+    await pushWechat(title, notificationMarkdown(notifications));
   } else {
     console.log("No new TikTok posts detected.");
   }
+
+  if (baselineCount > 0 && state.monitorVersion !== DETECTOR_VERSION) {
+    await pushWechat(
+      "TikTok监控修复已生效",
+      [
+        `已使用新版检测器建立基线：${baselineCount}/${creators.length} 个账号。`,
+        `成功读取：${checkedCount} 个账号。`,
+        `读取失败：${failures.length} 个账号。`,
+        "后续只在确认发现新视频时推送。",
+      ].join("\n\n"),
+    );
+    state.monitorVersion = DETECTOR_VERSION;
+    stateChanged = true;
+  }
+
+  if (stateChanged) await writeState(state);
+  else console.log("TikTok state is unchanged; no state file update needed.");
 
   if (failures.length > 0) {
     console.log("Some profiles could not be checked:");
@@ -208,7 +328,22 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+function selfTest() {
+  const html = String.raw`
+    <a href="https://www.tiktok.com/@nature.test/video/7000000000000000001">Pinned</a>
+    <script id="SIGI_STATE" type="application/json">{"ItemModule":{"new":{"id":"9000000000000000001","createTime":"1760000000","desc":"Newest post","author":"nature.test","video":{}},"other":{"id":"9999999999999999999","createTime":"1760000001","author":"someone.else","video":{}},"notVideo":{"id":"9999999999999999998","author":"nature.test"}}}</script>
+  `;
+  const posts = extractPosts("nature.test", html);
+  assert.deepEqual(posts.map((post) => post.id), ["9000000000000000001", "7000000000000000001"]);
+  assert.equal(posts[0].description, "Newest post");
+  console.log("Self-test passed.");
+}
+
+if (process.argv.includes("--self-test")) {
+  selfTest();
+} else {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

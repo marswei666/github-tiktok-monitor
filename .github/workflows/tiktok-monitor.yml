@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: "3,8,13,18,23,28,33,38,43,48,53,58 * * * *"
   workflow_dispatch:
+    inputs:
+      send_test_notification:
+        description: Send a ServerChan test notification
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -28,6 +34,7 @@ jobs:
       - name: Check TikTok creators
         env:
           SERVER_CHAN_SENDKEY: ${{ secrets.SERVER_CHAN_SENDKEY }}
+          SEND_TEST_NOTIFICATION: ${{ inputs.send_test_notification || 'false' }}
         run: node scripts/tiktok-monitor.mjs
 
       - name: Persist latest seen TikTok post IDs
