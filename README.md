@@ -10,10 +10,12 @@ Copy these paths into the root of your GitHub website repository:
 - `scripts/tiktok-monitor.mjs`
 - `data/tiktok-state.json`
 
-Then create a repository secret:
+Then create these repository secrets:
 
 - Name: `SERVER_CHAN_SENDKEY`
 - Value: your Server Chan Turbo SendKey, for example `SCT...`
+- Name: `APIFY_TOKEN`
+- Value: your Apify API token from `Apify Console -> Settings -> Integrations`
 
 GitHub path:
 
@@ -21,13 +23,13 @@ GitHub path:
 
 ## How it Works
 
-- Runs every 5 minutes through GitHub Actions.
+- Requests the latest post for each profile through the Apify TikTok Scraper.
 - Checks the configured TikTok handles.
-- First run only initializes state and does not push alerts.
+- The first corrected run safely rebuilds the baseline and sends a Server Chan health notification.
 - Later runs push to Server Chan only when a new TikTok video ID appears.
-- State is committed back to `data/tiktok-state.json`.
+- State is committed back to `data/tiktok-state.json` only when it changes.
 
 ## Notes
 
-TikTok may block or vary public profile HTML for cloud runners. If that happens often, use a paid TikTok data API or a small VPS with a residential/proxy-capable browser runner.
+GitHub-hosted runners are blocked by TikTok and cannot reliably read public profile posts directly. The monitor therefore requires an Apify token. GitHub scheduled workflows are also best-effort and may run hours late; use an external scheduler for time-sensitive monitoring.
 # github-tiktok-monitor

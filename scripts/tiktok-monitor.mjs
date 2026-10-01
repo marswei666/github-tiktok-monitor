@@ -33,6 +33,7 @@ const creators = [
 const DETECTOR_VERSION = 2;
 const stateFile = path.join(process.cwd(), "data", "tiktok-state.json");
 const sendKey = process.env.SERVER_CHAN_SENDKEY;
+const apifyToken = process.env.APIFY_TOKEN;
 const sendTestNotification = process.env.SEND_TEST_NOTIFICATION === "true";
 
 async function readState() {
@@ -213,6 +214,64 @@ async function fetchPostList(handle, secUid) {
   };
 }
 
+async function fetchPostsFromApify(handles) {
+  if (!apifyToken) return null;
+
+  const endpoint = new URL(
+    "https://api.apify.com/v2/acts/clockworks~tiktok-scraper/run-sync-get-dataset-items",
+  );
+  endpoint.searchParams.set("token", apifyToken);
+  endpoint.searchParams.set("timeout", "180");
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      profiles: handles,
+      resultsPerPage: 1,
+      profileScrapeSections: ["videos"],
+      profileSorting: "latest",
+      excludePinnedPosts: true,
+      shouldDownloadAvatars: false,
+      shouldDownloadCovers: false,
+      shouldDownloadMusicCovers: false,
+      shouldDownloadSlideshowImages: false,
+      shouldDownloadSubtitles: false,
+      shouldDownloadVideos: false,
+    }),
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`Apify HTTP ${response.status}: ${text.slice(0, 500)}`);
+
+  let items;
+  try {
+    items = JSON.parse(text);
+  } catch {
+    throw new Error(`Apify returned non-JSON; body=${text.length}`);
+  }
+  if (!Array.isArray(items)) throw new Error("Apify returned an unexpected response");
+
+  const postsByHandle = new Map(handles.map((handle) => [normalizeHandle(handle), new Map()]));
+  for (const item of items) {
+    const handle = normalizeHandle(item.authorMeta?.name ?? item.input);
+    const posts = postsByHandle.get(handle);
+    if (!posts) continue;
+    addPost(posts, {
+      id: String(item.id ?? ""),
+      createTime: item.createTime ?? null,
+      description: item.text ?? "",
+      displayName: item.authorMeta?.nickName ?? "",
+    });
+  }
+
+  return new Map(
+    [...postsByHandle].map(([handle, posts]) => [
+      handle,
+      [...posts.values()].sort(compareVideoIdsDescending),
+    ]),
+  );
+}
+
 function pageLooksBlocked(html) {
   return ["captcha", "verify", "Access Denied", "Please wait", "Something went wrong"].some(
     (marker) => html.toLowerCase().includes(marker.toLowerCase()),
@@ -312,9 +371,59 @@ async function main() {
   let checkedCount = 0;
   let baselineCount = 0;
   let stateChanged = false;
+  let apifyPosts = null;
+
+  if (apifyToken) {
+    apifyPosts = await fetchPostsFromApify(creators);
+    console.log("Using Apify TikTok Scraper as the post data source.");
+  } else {
+    console.log("APIFY_TOKEN is not configured; trying direct TikTok access.");
+  }
 
   for (const handle of creators) {
     try {
+      if (apifyPosts) {
+        const posts = apifyPosts.get(normalizeHandle(handle)) ?? [];
+        if (posts.length === 0) {
+          failures.push(`${handle}: Apify returned no posts`);
+          continue;
+        }
+        checkedCount += 1;
+        const latest = posts[0];
+        const previousState = state.creators[handle];
+        const needsBaseline = previousState?.detectorVersion !== DETECTOR_VERSION;
+        if (!previousState || needsBaseline) {
+          state.creators[handle] = {
+            latestVideoId: latest.id,
+            latestUrl: postUrl(handle, latest.id),
+            detectorVersion: DETECTOR_VERSION,
+            baselineAt: new Date().toISOString(),
+          };
+          baselineCount += 1;
+          stateChanged = true;
+          console.log(`${handle}: detector v${DETECTOR_VERSION} baseline ${latest.id}`);
+          continue;
+        }
+
+        const previousId = previousState.latestVideoId;
+        const newPosts = posts.filter((post) => BigInt(post.id) > BigInt(previousId));
+        if (newPosts.length > 0) {
+          for (const post of newPosts) {
+            notifications.push({ ...post, handle, url: postUrl(handle, post.id) });
+          }
+          state.creators[handle] = {
+            ...previousState,
+            latestVideoId: latest.id,
+            latestUrl: postUrl(handle, latest.id),
+            updatedAt: new Date().toISOString(),
+          };
+          stateChanged = true;
+        } else {
+          console.log(`${handle}: no change (${previousId})`);
+        }
+        continue;
+      }
+
       const html = await fetchProfile(handle);
       let posts = extractPosts(handle, html);
       let apiDiagnostics = "postApi=not-tried";

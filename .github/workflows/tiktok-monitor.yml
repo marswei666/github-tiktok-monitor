@@ -39,6 +39,7 @@ jobs:
 
       - name: Check TikTok creators
         env:
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
           SERVER_CHAN_SENDKEY: ${{ secrets.SERVER_CHAN_SENDKEY }}
           SEND_TEST_NOTIFICATION: ${{ inputs.send_test_notification || 'false' }}
         run: node scripts/tiktok-monitor.mjs
