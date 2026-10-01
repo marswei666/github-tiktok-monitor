@@ -160,6 +160,23 @@ function pageLooksBlocked(html) {
   );
 }
 
+function htmlDiagnostics(html) {
+  const scriptIds = [...html.matchAll(/<script[^>]+id=["']([^"']+)["']/gi)]
+    .map((match) => match[1])
+    .slice(0, 8);
+  return [
+    `html=${html.length}`,
+    `videoPaths=${(html.match(/\\?\/video\\?\//g) ?? []).length}`,
+    `videoIdFields=${(html.match(/videoId/gi) ?? []).length}`,
+    `itemModule=${html.includes("ItemModule")}`,
+    `scriptIds=${scriptIds.join(",") || "none"}`,
+  ].join("; ");
+}
+
+function workflowCommandText(text) {
+  return text.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+}
+
 function postUrl(handle, id) {
   return `https://www.tiktok.com/@${handle}/video/${id}`;
 }
@@ -245,7 +262,7 @@ async function main() {
         const reason = pageLooksBlocked(html)
           ? "no verified post IDs found; page may be blocked/challenged"
           : "no verified post IDs found";
-        failures.push(`${handle}: ${reason}; html length=${html.length}`);
+        failures.push(`${handle}: ${reason}; ${htmlDiagnostics(html)}`);
         continue;
       }
 
@@ -292,6 +309,9 @@ async function main() {
       "All TikTok profile checks failed. TikTok may be blocking GitHub Actions runner IPs or may have changed its profile HTML.",
     );
     for (const failure of failures) console.log(`- ${failure}`);
+    console.log(
+      `::error title=TikTok profile parsing failed::${workflowCommandText(failures.slice(0, 6).join(" | "))}`,
+    );
     process.exitCode = 1;
     return;
   }
