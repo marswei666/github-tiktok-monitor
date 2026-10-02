@@ -46,9 +46,10 @@
       "initializedAt": "2026-09-18T09:53:50.259Z"
     },
     "emcu680": {
-      "latestVideoId": "7656332850895602689",
-      "latestUrl": "https://www.tiktok.com/@emcu680/video/7656332850895602689",
-      "initializedAt": "2026-09-18T09:53:50.530Z"
+      "latestVideoId": "7671627415910731028",
+      "latestUrl": "https://www.tiktok.com/@emcu680/video/7671627415910731028",
+      "detectorVersion": 2,
+      "baselineAt": "2026-10-02T00:49:19.444Z"
     },
     "natsuinaka": {
       "latestVideoId": "7523538180458546184",
@@ -126,5 +127,6 @@
       "initializedAt": "2026-09-18T09:53:55.536Z"
     }
   },
-  "updatedAt": "2026-10-01T02:08:54.895Z"
+  "updatedAt": "2026-10-02T00:49:36.498Z",
+  "monitorVersion": 2
 }
