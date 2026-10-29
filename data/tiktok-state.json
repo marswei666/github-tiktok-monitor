@@ -92,10 +92,11 @@
       "initializedAt": "2026-09-18T09:53:53.143Z"
     },
     "ry.rai.rai": {
-      "latestVideoId": "7694947572393331976",
-      "latestUrl": "https://www.tiktok.com/@ry.rai.rai/video/7694947572393331976",
+      "latestVideoId": "7700530015020109063",
+      "latestUrl": "https://www.tiktok.com/@ry.rai.rai/video/7700530015020109063",
       "detectorVersion": 2,
-      "baselineAt": "2026-10-15T19:13:43.705Z"
+      "baselineAt": "2026-10-15T19:13:43.705Z",
+      "updatedAt": "2026-10-29T23:21:05.716Z"
     },
     "kurrrree": {
       "latestVideoId": "7369599996021457938",
@@ -128,6 +129,6 @@
       "initializedAt": "2026-09-18T09:53:55.536Z"
     }
   },
-  "updatedAt": "2026-10-15T19:13:46.952Z",
+  "updatedAt": "2026-10-29T23:21:11.352Z",
   "monitorVersion": 2
 }
