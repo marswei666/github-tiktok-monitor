@@ -77,9 +77,10 @@
       "initializedAt": "2026-09-18T09:53:52.259Z"
     },
     "hiro_film": {
-      "latestVideoId": "7578084166966379541",
-      "latestUrl": "https://www.tiktok.com/@hiro_film/video/7578084166966379541",
-      "initializedAt": "2026-09-18T09:53:52.544Z"
+      "latestVideoId": "7702439289786748168",
+      "latestUrl": "https://www.tiktok.com/@hiro_film/video/7702439289786748168",
+      "detectorVersion": 2,
+      "baselineAt": "2026-10-30T15:54:21.034Z"
     },
     "marcoandflo": {
       "latestVideoId": "6786968415246533637",
@@ -129,6 +130,6 @@
       "initializedAt": "2026-09-18T09:53:55.536Z"
     }
   },
-  "updatedAt": "2026-10-29T23:21:11.352Z",
+  "updatedAt": "2026-10-30T15:54:25.172Z",
   "monitorVersion": 2
 }
